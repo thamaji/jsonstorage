@@ -51,7 +51,11 @@ func (storage *Storage[T]) Range(f func(string, T) error) error {
 		}
 
 		path := filepath.Join(storage.dir, name)
-		entry, err := storage.get(path)
+
+		ent := entry[T]{}
+		err := fstools.ReadFileFunc(path, func(r io.Reader) error {
+			return json.NewDecoder(r).Decode(&ent)
+		})
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
@@ -59,7 +63,7 @@ func (storage *Storage[T]) Range(f func(string, T) error) error {
 			return fmt.Errorf("%w: failed to range JSONs: %s", ErrInternal, err)
 		}
 
-		if err := f(entry.Key, entry.Value); err != nil {
+		if err := f(ent.Key, ent.Value); err != nil {
 			return err
 		}
 	}
@@ -70,54 +74,92 @@ func (storage *Storage[T]) Range(f func(string, T) error) error {
 func (storage *Storage[T]) Get(key string) (T, error) {
 	key = strings.ToLower(key)
 	path := filepath.Join(storage.dir, url.PathEscape(key)+".json")
+
 	storage.mutex.RLock()
-	entry, err := storage.get(path)
-	storage.mutex.RUnlock()
+	defer storage.mutex.RUnlock()
+
+	ent := entry[T]{}
+	err := fstools.ReadFileFunc(path, func(r io.Reader) error {
+		return json.NewDecoder(r).Decode(&ent)
+	})
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return *new(T), fmt.Errorf("%w: %s", ErrNotExist, key)
 		}
 		return *new(T), fmt.Errorf("%w: failed to get JSON: %s", ErrInternal, err)
 	}
-	return entry.Value, nil
-}
 
-func (storage *Storage[T]) get(path string) (*entry[T], error) {
-	entry := entry[T]{}
-	err := fstools.ReadFileFunc(path, func(r io.Reader) error {
-		return json.NewDecoder(r).Decode(&entry)
-	})
-	return &entry, err
+	return ent.Value, nil
 }
 
 func (storage *Storage[T]) Put(key string, value T) error {
 	key = strings.ToLower(key)
 	path := filepath.Join(storage.dir, url.PathEscape(key)+".json")
+
 	storage.mutex.Lock()
+	defer storage.mutex.Unlock()
+
 	err := fstools.WriteFileFunc(path, func(w io.Writer) error {
 		return json.NewEncoder(w).Encode(entry[T]{
 			Key:   key,
 			Value: value,
 		})
 	})
-	storage.mutex.Unlock()
 	if err != nil {
 		return fmt.Errorf("%w: failed to put JSON: %s", ErrInternal, err)
 	}
+
+	return nil
+}
+
+func (storage *Storage[T]) Edit(key string, f func(T) (T, error)) error {
+	key = strings.ToLower(key)
+	path := filepath.Join(storage.dir, url.PathEscape(key)+".json")
+
+	storage.mutex.Lock()
+	defer storage.mutex.Unlock()
+
+	ent := entry[T]{}
+	err := fstools.ReadFileFunc(path, func(r io.Reader) error {
+		return json.NewDecoder(r).Decode(&ent)
+	})
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%w: %s", ErrNotExist, key)
+		}
+		return fmt.Errorf("%w: failed to edit JSON: %s", ErrInternal, err)
+	}
+
+	value, err := f(ent.Value)
+	if err != nil {
+		return err
+	}
+
+	err = fstools.WriteFileFunc(path, func(w io.Writer) error {
+		return json.NewEncoder(w).Encode(entry[T]{
+			Key:   key,
+			Value: value,
+		})
+	})
+	if err != nil {
+		return fmt.Errorf("%w: failed to edit JSON: %s", ErrInternal, err)
+	}
+
 	return nil
 }
 
 func (storage *Storage[T]) Delete(key string) error {
 	key = strings.ToLower(key)
 	path := filepath.Join(storage.dir, url.PathEscape(key)+".json")
-	var err error
+
 	storage.mutex.Lock()
+	defer storage.mutex.Unlock()
+
 	if fstools.Exists(path) {
-		err = os.Remove(path)
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("%w: failed to delete JSON: %s", ErrInternal, err)
+		}
 	}
-	storage.mutex.Unlock()
-	if err != nil {
-		return fmt.Errorf("%w: failed to delete JSON: %s", ErrInternal, err)
-	}
+
 	return nil
 }
