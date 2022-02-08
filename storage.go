@@ -112,7 +112,7 @@ func (storage *Storage[T]) Put(key string, value T) error {
 	return nil
 }
 
-func (storage *Storage[T]) Edit(key string, f func(T) (T, error)) error {
+func (storage *Storage[T]) Edit(key string, f func(T) (T, error)) (T, error) {
 	key = strings.ToLower(key)
 	path := filepath.Join(storage.dir, url.PathEscape(key)+".json")
 
@@ -125,14 +125,14 @@ func (storage *Storage[T]) Edit(key string, f func(T) (T, error)) error {
 	})
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("%w: %s", ErrNotExist, key)
+			return *new(T), fmt.Errorf("%w: %s", ErrNotExist, key)
 		}
-		return fmt.Errorf("%w: failed to edit JSON: %s", ErrInternal, err)
+		return *new(T), fmt.Errorf("%w: failed to edit JSON: %s", ErrInternal, err)
 	}
 
 	value, err := f(ent.Value)
 	if err != nil {
-		return err
+		return *new(T), err
 	}
 
 	err = fstools.WriteFileFunc(path, func(w io.Writer) error {
@@ -142,10 +142,10 @@ func (storage *Storage[T]) Edit(key string, f func(T) (T, error)) error {
 		})
 	})
 	if err != nil {
-		return fmt.Errorf("%w: failed to edit JSON: %s", ErrInternal, err)
+		return *new(T), fmt.Errorf("%w: failed to edit JSON: %s", ErrInternal, err)
 	}
 
-	return nil
+	return value, nil
 }
 
 func (storage *Storage[T]) Delete(key string) error {
